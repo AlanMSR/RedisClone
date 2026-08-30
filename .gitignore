@@ -1,0 +1,21 @@
+# Object files
+*.o
+*.obj
+
+# Executables (adjust names to match your actual output files)
+server
+client
+*.out
+*.exe
+
+# Build folders
+build/
+out/
+
+# Editor/IDE
+.vscode/
+*.swp
+
+# OS-specific
+.DS_Store
+Thumbs.db
