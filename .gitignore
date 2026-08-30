@@ -2,6 +2,11 @@
 *.o
 *.obj
 
+# Ignore common compiled binary names in this project
+main
+server
+client
+
 # Executables (adjust names to match your actual output files)
 server
 client
