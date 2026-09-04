@@ -13,7 +13,7 @@
 
 #include "utils.hpp"
 
-int headerBytes = 4;
+constexpr size_t headerBytes = 4;
 
 struct Conn {
     int fd = -1;
@@ -209,70 +209,37 @@ static void buf_consume(std::vector<uint8_t> &buf, size_t n) {
     buf.erase(buf.begin(), buf.begin() + n);
 }
 
-// static bool try_one_request(Conn* conn) {
-//     // try to parse accumulated buffer
-//     // protocol message header is 4 bytes, which is the length of the message body
-//     if (conn->incoming.size() < headerBytes)
-//         return false; // want read
+static bool try_one_request(Conn* conn) {
+    // try to parse accumulated buffer
+    // protocol message header is 4 bytes, which is the length of the message body
+    if (conn->incoming.size() < headerBytes)
+        return false; // want read
 
-//     uint32_t len = 0;
-//     memcpy(&len, conn->incoming.data(), headerBytes);
-//     if (len > k_max_msg) {
-//         conn->want_close = true;
-//         return false;
-//     }
-//     return true;
-
-//     //protocol: message body
-//     if (headerBytes + len > conn->incoming.size())
-//         return false; // want read
-
-//     const uint8_t* request = &conn->incoming[headerBytes];
-
-//     // proccess parsed message
-//     printf("client says: len:%d data:%.*s\n",
-//         len, len < 100 ? len : 100, request);
-
-//     // generate the response
-//     buf_append(conn->outgoing, (const uint8_t*)&len, headerBytes);
-//     buf_append(conn->outgoing, request, len);
-
-//     // remove the processed message from Conn::incoming
-//     buf_consume(conn->incoming, headerBytes + len);
-
-//     return true; // all went good
-// }
-
-static bool try_one_request(Conn *conn) {
-    // try to parse the protocol: message header
-    if (conn->incoming.size() < 4) {
-        return false;   // want read
-    }
     uint32_t len = 0;
-    memcpy(&len, conn->incoming.data(), 4);
+    memcpy(&len, conn->incoming.data(), headerBytes);
     if (len > k_max_msg) {
-        msg("too long");
         conn->want_close = true;
-        return false;   // want close
+        return false;
     }
-    // message body
-    if (4 + len > conn->incoming.size()) {
-        return false;   // want read
-    }
-    const uint8_t *request = &conn->incoming[4];
 
-    // got one request, do some application logic
+    //protocol: message body
+    if (headerBytes + len > conn->incoming.size())
+        return false; // want read
+
+    const uint8_t* request = &conn->incoming[headerBytes];
+
+    // proccess parsed message
     printf("client says: len:%d data:%.*s\n",
         len, len < 100 ? len : 100, request);
 
     // generate the response
-    buf_append(conn->outgoing, (const uint8_t *)&len, 4);
+    buf_append(conn->outgoing, (const uint8_t*)&len, headerBytes);
     buf_append(conn->outgoing, request, len);
 
-    // remove the request message.
-    buf_consume(conn->incoming, 4 + len);
+    // remove the processed message from Conn::incoming
+    buf_consume(conn->incoming, headerBytes + len);
 
-    return true;
+    return true; // all went good
 }
 
 // static size_t one_request(int connFd) {
