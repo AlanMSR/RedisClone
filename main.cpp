@@ -1,15 +1,16 @@
-#include <sys/socket.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <fcntl.h>
+#include <sys/socket.h>
 #include <unistd.h>
-#include <vector>
-#include <iostream>
+
 #include <cassert>
-#include <cstring>
 #include <cstdint>
-#include <stdio.h>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <vector>
 
 #include "utils.hpp"
 
@@ -107,7 +108,7 @@ int main() {
         }
         
         // handle connection sockets
-        for (size_t i = 1; i < poll_args.size(); ++i) { // skiping 1st
+        for (size_t i = 1; i < poll_args.size(); ++i) { // skiping 1st, which is the listening socket
             uint32_t ready = poll_args[i].revents;
             Conn* conn = fd2conn[poll_args[i].fd];
             
@@ -213,7 +214,7 @@ static bool try_one_request(Conn* conn) {
     // try to parse accumulated buffer
     // protocol message header is 4 bytes, which is the length of the message body
     if (conn->incoming.size() < headerBytes)
-        return false; // want read
+        return false; // not enough data yet
 
     uint32_t len = 0;
     memcpy(&len, conn->incoming.data(), headerBytes);
@@ -224,7 +225,7 @@ static bool try_one_request(Conn* conn) {
 
     //protocol: message body
     if (headerBytes + len > conn->incoming.size())
-        return false; // want read
+        return false; // not enough data yet
 
     const uint8_t* request = &conn->incoming[headerBytes];
 
@@ -241,42 +242,3 @@ static bool try_one_request(Conn* conn) {
 
     return true; // all went good
 }
-
-// static size_t one_request(int connFd) {
-//     // 4 bytes header
-//     int headerBytes = 4;
-//     char rbuf[headerBytes + k_max_msg];
-//     errno = 0;
-    
-//     int32_t err = read_full(connFd, rbuf, headerBytes);
-//     if (err) {
-//         msg(errno == 0 ? "EOF" : "read() error");
-//         return err;
-//     }
-
-//     uint32_t len = 0;
-//     memcpy(&len, rbuf, headerBytes);
-//     if (len > k_max_msg) {
-//         msg("message too long");
-//         return -1;
-//     }
-
-//     // request body
-//     err = read_full(connFd, &rbuf[4], len);
-//     if (err) {
-//         msg("read() error");
-//         return err;
-//     }
-
-//     // do something
-//     std::cout << "client says: " << std::string(&rbuf[4], len) << std::endl;
-
-//     // reply using the same protocol
-//     std::string reply = "DO NOT DISTURB!";
-//     char wbuf[headerBytes + reply.size()];
-//     len = (uint32_t)reply.size();
-//     memcpy(wbuf, &len, headerBytes);
-//     memcpy(&wbuf[4], reply.data(), reply.size());
-
-//     return write_all(connFd, wbuf, headerBytes + reply.size());
-// }
