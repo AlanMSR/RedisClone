@@ -173,7 +173,7 @@ static void handle_read(Conn* conn) {
     // try to parse the accumulated data in the buffer
     // process parsed message
     // remove message from conn::incoming buffer
-     while (try_one_request(conn)) {}
+    while (try_one_request(conn)) {}
 
     if (!conn->outgoing.empty()) {
         conn->want_write = true;
@@ -185,6 +185,9 @@ static void handle_write(Conn* conn) {
     assert(!conn->outgoing.empty());
 
     ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size());
+    if (rv < 0 && errno == EAGAIN) {
+        return; // not ready
+    }
     if (rv < 0) {
         conn->want_close = true;
         return;
