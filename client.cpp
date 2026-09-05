@@ -3,16 +3,18 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
+#include <cstdio>
 #include <vector>
 #include <cassert>
 #include <iostream>
 #include "utils.hpp"
 
+int headerBytes = 4;
 
 static int32_t read_full(int fd, uint8_t* buf, size_t n);
 static int32_t write_all(int fd, uint8_t* buf, size_t n);
-static int32_t query(int fd, const char* text);
-
+static int32_t send_req(int fd, const uint8_t* text, size_t len);
+static int32_t read_res(int fd, uint8_t* buf, size_t n);
 int main() {
     int socketCFD = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -33,24 +35,23 @@ int main() {
         "I am client!!!"
     };
 
+    // PIPELINE: send requests and read responses
+    // send requests
     for (const auto& msgg : messagesS) {
-        int32_t err = query(socketCFD, msgg.data());
+        int32_t err = send_req(socketCFD, (const uint8_t*)msgg.data(), msgg.size());
         if (err) {
-            close(socketCFD);
-            return err;
+            die("send_req() failed");
         }
     }
 
-    // int32_t err = query(socketCFD, "hello SONYAAA");
-    // if (err) {
-    //     close(socketCFD);
-    //     return err;
-    // }
-    // err = query(socketCFD, "hello SOPHIAAAAAA");
-    // if (err) {
-    //     close(socketCFD);
-    //     return err;
-    // }
+    // read responses
+    for (size_t i = 0; i < messagesS.size(); ++i) {
+        int32_t err = read_res(socketCFD, nullptr, 0);
+        if (err) {
+            die("read_res() failed");
+        }
+    }
+
     return 0;
 }
 
@@ -81,9 +82,7 @@ static int32_t write_all(int fd, uint8_t* buf, size_t n) {
     return 0;
 }
 
-static int32_t query(int fd, const char* text) {
-    int headerBytes = 4;
-    uint32_t len = (uint32_t)strlen(text);
+static int32_t send_req(int fd, const uint8_t* text, size_t len) {
     if (len > k_max_msg) {
         msg("message too long");
         return -1;
@@ -96,7 +95,11 @@ static int32_t query(int fd, const char* text) {
     if (int32_t err = write_all(fd, wbuf.data(), headerBytes + len))
         return err;
 
-    std::vector<uint8_t> rbuf(headerBytes + k_max_msg);
+    return 0;
+}
+
+static int32_t read_res(int fd, uint8_t* buf, size_t n) {
+    std::vector<uint8_t> rbuf(headerBytes);
     errno = 0;
     int32_t err = read_full(fd, rbuf.data(), headerBytes);
     if (err) {
@@ -112,13 +115,14 @@ static int32_t query(int fd, const char* text) {
     }
 
     // reply body
+    rbuf.resize(headerBytes + replyLen);
     err = read_full(fd, &rbuf[headerBytes], replyLen);
     if (err) {
         msg("read() error");
         return err;
     }
 
-    // std::cout << "server says: " << std::string(&rbuf[headerBytes], replyLen) << std::endl;
+    printf("len:%u data:%.*s\n", replyLen, (int)replyLen, &rbuf[headerBytes]);
 
     return 0;
 }

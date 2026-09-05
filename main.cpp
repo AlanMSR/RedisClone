@@ -95,7 +95,7 @@ int main() {
 
         if (rv < 0)
             die("poll()");
-
+        printf("HEREEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE");
         // handling listening sockets
         if (poll_args[0].revents) {
             if (Conn* conn = handle_accept(socketFD)) {
@@ -164,6 +164,10 @@ static void handle_read(Conn* conn) {
     ssize_t rv = read(conn->fd, buf, sizeof(buf));
     if (rv < 0) {
         conn->want_close = true;
+        return;
+    }
+    if (rv == 0) {
+        conn->want_close = true; // EOF, the client closed the connection
         return;
     }
 
