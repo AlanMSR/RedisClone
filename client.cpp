@@ -13,44 +13,31 @@ int headerBytes = 4;
 
 static int32_t read_full(int fd, uint8_t* buf, size_t n);
 static int32_t write_all(int fd, uint8_t* buf, size_t n);
-static int32_t send_req(int fd, const uint8_t* text, size_t len);
-static int32_t read_res(int fd, uint8_t* buf, size_t n);
-int main() {
+static int32_t send_req(int fd, const std::vector<std::string> &cmd);
+static int32_t read_res(int fd);
+
+int main(int argc, char **argv) {
     int socketCFD = socket(AF_INET, SOCK_STREAM, 0);
 
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = ntohs(1234);
-     addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);
+    addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);
 
     int binfResult = connect(socketCFD, (const struct sockaddr*)&addr, sizeof(addr));
     if (binfResult)
         die("bind()");
 
-    std::vector<std::string> messagesS = {
-        "Whos there?",
-        "I am client",
-        "youre the serber right?",
-        "perfect!",
-        "I am client!!!"
-    };
-
-    // PIPELINE: send requests and read responses
-    // send requests
-    for (const auto& msgg : messagesS) {
-        int32_t err = send_req(socketCFD, (const uint8_t*)msgg.data(), msgg.size());
-        if (err) {
-            die("send_req() failed");
-        }
+    std::vector<std::string> cmd;
+    for (int i = 1; i < argc; ++i) {
+        cmd.push_back(argv[i]);
     }
-
-    // read responses
-    for (size_t i = 0; i < messagesS.size(); ++i) {
-        int32_t err = read_res(socketCFD, nullptr, 0);
-        if (err) {
-            die("read_res() failed");
-        }
+    int32_t err = send_req(socketCFD, cmd);
+    if (err) {
+        close(socketCFD);
+        return 1;
     }
+    err = read_res(socketCFD);
 
     return 0;
 }
@@ -82,7 +69,12 @@ static int32_t write_all(int fd, uint8_t* buf, size_t n) {
     return 0;
 }
 
-static int32_t send_req(int fd, const uint8_t* text, size_t len) {
+static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
+    uint32_t len = 4;
+    for (const std::string &s : cmd) {
+        len += 4 + s.size();
+    }
+
     if (len > k_max_msg) {
         msg("message too long");
         return -1;
@@ -91,14 +83,21 @@ static int32_t send_req(int fd, const uint8_t* text, size_t len) {
     // send request
     std::vector<uint8_t> wbuf(headerBytes + k_max_msg);
     memcpy(wbuf.data(), &len, headerBytes);
-    memcpy(&wbuf[headerBytes], text, len);
-    if (int32_t err = write_all(fd, wbuf.data(), headerBytes + len))
-        return err;
+    uint32_t n = cmd.size();
+    memcpy(wbuf.data() + headerBytes, &n, headerBytes);
+    size_t cur = 8;
+    for (const std::string &s : cmd) {
+        uint32_t p = (uint32_t)s.size();
+        memcpy(wbuf.data() + cur, &p, headerBytes);
+        memcpy(wbuf.data() + cur + headerBytes, s.data(), s.size());
+        cur += 4 + s.size();
+    }
+    return write_all(fd, wbuf.data(), 4 + len);
 
     return 0;
 }
 
-static int32_t read_res(int fd, uint8_t* buf, size_t n) {
+static int32_t read_res(int fd) {
     std::vector<uint8_t> rbuf(headerBytes);
     errno = 0;
     int32_t err = read_full(fd, rbuf.data(), headerBytes);
@@ -122,7 +121,15 @@ static int32_t read_res(int fd, uint8_t* buf, size_t n) {
         return err;
     }
 
-    printf("len:%u data:%.*s\n", replyLen, (int)replyLen, &rbuf[headerBytes]);
+    // print the result
+    uint32_t rescode = 0;
+    if (replyLen < 4) {
+        msg("bad response");
+        return -1;
+    }
+
+    memcpy(&rescode, &rbuf[4], 4);
+    printf("server says: [%u] %.*s\n", rescode, replyLen - 4, (const char*)(rbuf.data() + 8));    return 0;
 
     return 0;
 }

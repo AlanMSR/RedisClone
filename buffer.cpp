@@ -1,6 +1,7 @@
 #include "buffer.hpp"
 #include <cstring>
 #include <cassert>
+#include <stdexcept>
 
 Buffer::Buffer(size_t size)
     : buffer_begin_(new uint8_t[size]),
@@ -12,6 +13,9 @@ Buffer::Buffer(size_t size)
 Buffer::~Buffer() {}
 
 void Buffer::append(const uint8_t* data, size_t len) {
+    if (len > SIZE_MAX - size()) {
+        throw std::length_error("Buffer::append: size overflow");
+    }
     ensure_capacity(size() + len);
     std::memcpy(data_end_, data, len);
     data_end_ += len;
@@ -56,9 +60,12 @@ void Buffer::ensure_capacity(size_t new_size) {
         return;
     }
 
-    size_t new_buffer_size = buffer_size_ * 2;
+    size_t new_buffer_size = buffer_size_;
     // making sure the new buffer size is at least as large as the requested new size
     while (new_buffer_size < new_size) {
+        if (new_buffer_size > SIZE_MAX / 2) {
+            throw std::length_error("Buffer::ensure_capacity: size overflow");
+        }
         new_buffer_size *= 2;
     }
 
