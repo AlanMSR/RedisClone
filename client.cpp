@@ -1,12 +1,14 @@
-#include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
-#include <cstring>
-#include <cstdio>
-#include <vector>
+
 #include <cassert>
+#include <cstdio>
+#include <cstring>
 #include <iostream>
+#include <vector>
+
 #include "utils.hpp"
 
 int headerBytes = 4;

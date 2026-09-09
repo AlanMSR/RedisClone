@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-// #include <iostream>
 #include <vector>
 #include <map>
 
@@ -54,7 +53,6 @@ static bool read_str(const uint8_t*& cur, const uint8_t* end, size_t n, std::str
 static int32_t parse_req(const uint8_t* data, size_t size, std::vector<std::string>& out);
 static void do_request(std::vector<std::string>& cmd, Response& out);
 static void make_response(const Response& resp, Buffer& out);
-// static size_t one_request(int connFd);
 
 // server
 int main() {
