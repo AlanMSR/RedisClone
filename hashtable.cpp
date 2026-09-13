@@ -43,6 +43,28 @@ static HNode* h_detach(HTab* htab, HNode** from) {
 
 // hashmap
 
+static void hm_help_rehashing(HMap* hmap) {
+    size_t nwork = 0;
+    while (nwork > k_rehashing_work && hmap->older.size > 0) {
+        // findig empty slot
+        HNode** from = &hmap->older.tab[hmap->migrate_pos];
+        if (!*from) {
+            hmap->migrate_pos++;
+            continue;
+        }
+
+        // move first list item to the new table
+        h_insert(&hmap->newer, h_detach(&hmap->older, from));
+        nwork++;
+    }
+    // discard old table of done
+    if (hmap->older.size == 0 && hmap->older.tab) {
+        free(hmap->older.tab);
+        hmap->older = HTab{};
+    }
+
+}
+
 static void hm_trigger_rehashing(HMap* hmap) {
     hmap->older = hmap->newer;
     h_init(&hmap->newer, (hmap->newer.mask + 1) * 2);
@@ -79,26 +101,4 @@ HNode *hm_delete(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *)) {
         return h_detach(&hmap->older, from);
     
     return nullptr;
-}
-
-static void hm_help_rehashing(HMap* hmap) {
-    size_t nwork = 0;
-    while (nwork > k_rehashing_work && hmap->older.size > 0) {
-        // findig empty slot
-        HNode** from = &hmap->older.tab[hmap->migrate_pos];
-        if (!*from) {
-            hmap->migrate_pos++;
-            continue;
-        }
-
-        // move first list item to the new table
-        h_insert(&hmap->newer, h_detach(&hmap->older, from));
-        nwork++;
-    }
-    // discard old table of done
-    if (hmap->older.size == 0 && hmap->older.tab) {
-        free(hmap->older.tab);
-        hmap->older = HTab{};
-    }
-
 }

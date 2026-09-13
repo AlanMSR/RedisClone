@@ -14,10 +14,24 @@
 
 #include "utils.hpp"
 #include "buffer.hpp"
+#include "hashtable.hpp"
+
+// ???
+#define container_of(ptr, T, member) \
+    ((T *)( (char *)ptr - offsetof(T, member) ))
 
 constexpr size_t headerBytes = 4;
 
-static std::map<std::string, std::string> g_data;
+static struct {
+    HMap db;
+} g_data;
+
+// KV pair
+struct Entry {
+    struct HNode node;
+    std::string key;
+    std::string val;
+};
 
 enum {
     RES_OK = 0,
@@ -53,6 +67,12 @@ static bool read_str(const uint8_t*& cur, const uint8_t* end, size_t n, std::str
 static int32_t parse_req(const uint8_t* data, size_t size, std::vector<std::string>& out);
 static void do_request(std::vector<std::string>& cmd, Response& out);
 static void make_response(const Response& resp, Buffer& out);
+
+static bool entry_eq(HNode* lhs, HNode* rhs);
+static void do_get(std::vector<std::string>& cmd, Response& out);
+static void do_set(std::vector<std::string>& cmd, Response& out);
+static void do_del(std::vector<std::string>& cmd, Response& out);
+static uint64_t str_hash(const uint8_t *data, size_t len);
 
 // server
 int main() {
@@ -307,19 +327,74 @@ static int32_t parse_req(const uint8_t* data, size_t size, std::vector<std::stri
     return 0;
 }
 
+static bool entry_eq(HNode* lhs, HNode* rhs) {
+    struct Entry* le = container_of(lhs, struct Entry, node);
+    struct Entry* re = container_of(rhs, struct Entry, node);
+    return le->key == re->key;
+}
+
+static void do_get(std::vector<std::string>& cmd, Response& out) {
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
+    // lookup
+    HNode* node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (!node) {
+        out.status = RES_NX;
+        return;
+    }
+
+    // copy value
+    const std::string &val = container_of(node, Entry, node)->val;
+    assert(val.size() <= k_max_msg);
+    out.data.assign(val.begin(), val.end());
+}
+
+static void do_set(std::vector<std::string>& cmd, Response& out) {
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
+
+    HNode* node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (node) {
+        container_of(node, Entry, node)->val.swap(cmd[2]);
+    } else {
+        Entry* newEnt = new Entry();
+        newEnt->key.swap(key.key);
+        newEnt->val.swap(cmd[2]);
+        newEnt->node.hcode = key.node.hcode; // not computing hcode again
+        hm_insert(&g_data.db, &newEnt->node);
+    }
+}
+
+static void do_del(std::vector<std::string>& cmd, Response& out) {
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
+    HNode* node = hm_delete(&g_data.db, &key.node, &entry_eq);
+    if (!node) {
+        out.status = RES_NX;
+        return;
+    }
+
+    Entry* ent = container_of(node, Entry, node);
+
+    // copy value
+    const std::string &val = ent->val;
+    assert(val.size() <= k_max_msg);
+    out.data.assign(val.begin(), val.end());
+
+    // deallocation
+    delete ent;
+}
+
 static void do_request(std::vector<std::string>& cmd, Response& out) {
     if (cmd.size() == 2 && cmd[0] == "get") {
-        auto it = g_data.find(cmd[1]);
-        if (it == g_data.end()) {
-            out.status = RES_NX; // response not found
-            return;
-        }
-        const std::string& val = it->second;
-        out.data.assign(val.begin(), val.end());
+        return do_get(cmd, out);
     } else if (cmd.size() == 3 && cmd[0] == "set") {
-        g_data[cmd[1]].swap(cmd[2]);
+        return do_set(cmd, out);
     } else if (cmd.size() == 2 && cmd[0] == "del") {
-        g_data.erase(cmd[1]);
+        return do_del(cmd, out);
     } else {
         out.status = RES_ERR; // unrecognized command
     }
@@ -330,4 +405,13 @@ static void make_response(const Response& resp, Buffer& out) {
     out.append((const uint8_t *)&resp_len, 4);
     out.append((const uint8_t *)&resp.status, 4);
     out.append(reinterpret_cast<const uint8_t*>(resp.data.data()), resp.data.size());
+}
+
+// FNV hash?
+static uint64_t str_hash(const uint8_t *data, size_t len) {
+    uint32_t h = 0x811C9DC5;
+    for (size_t i = 0; i < len; i++) {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
 }
