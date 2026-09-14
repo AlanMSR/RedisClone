@@ -39,6 +39,14 @@ const uint8_t* Buffer::data() const {
     return data_begin_;
 }
 
+uint8_t* Buffer::data() {
+    return data_begin_;
+}
+
+void Buffer::resize(size_t new_size) {
+    data_end_ = data_begin_ + new_size;
+}
+
 size_t Buffer::size() const {
     return static_cast<size_t>(data_end_ - data_begin_);
 }

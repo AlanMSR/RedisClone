@@ -102,3 +102,27 @@ HNode *hm_delete(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *)) {
     
     return nullptr;
 }
+
+size_t hm_size(HMap *hmap) {
+    return hmap->newer.size + hmap->older.size;
+}
+
+static bool h_foreach(HTab *htab, bool (*cbk)(HNode*, void*), void *arg) {
+    if(!htab->tab)
+        return true;
+    
+    for (size_t i = 0; i <= htab->mask; i++) {
+       for (HNode* node = htab->tab[i]; node != nullptr;) {
+        HNode* next = node->next;
+        if (!cbk(node, arg)) {
+            return false;
+        }
+        node = next;
+       }
+    }
+    return true;
+}
+
+void hm_foreach(HMap* hmap, bool (*cbk)(HNode *, void *), void* arg) {
+    h_foreach(&hmap->newer, cbk, arg) && h_foreach(&hmap->older, cbk, arg);
+}
