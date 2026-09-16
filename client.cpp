@@ -217,7 +217,7 @@ static int32_t read_res(int fd) {
 
     // reply body
     rbuf.resize(headerBytes + replyLen);
-    err = read_full(fd, &rbuf[headerBytes], replyLen);
+    err = read_full(fd, rbuf.data() + headerBytes, replyLen);
     if (err) {
         msg("read() error");
         return err;
@@ -225,7 +225,11 @@ static int32_t read_res(int fd) {
 
     // memcpy(&rescode, &rbuf[4], 4);
     // printf("server says: [%u] %.*s\n", rescode, replyLen - 4, (const char*)(rbuf.data() + 8));    return 0;
-    int32_t rv = print_response((uint8_t *)&rbuf[4], replyLen);
+    if (replyLen == 0) {
+        msg("no response");
+        return 1;
+    }
+    int32_t rv = print_response(rbuf.data() + headerBytes, replyLen);
     if (rv > 0 && (uint32_t)rv != replyLen) {
         msg("bad response");
         rv = -1;
