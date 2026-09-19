@@ -11,6 +11,7 @@ static uint32_t avl_height(AVLNode* node) {
 
 static void avl_update(AVLNode* node) {
     node->height = 1 + std::max(avl_height(node->left), avl_height(node->right));
+    node->cnt = 1 + avl_cnt(node->left) + avl_cnt(node->right);
 }
 
 static uint8_t avl_get_height_diff(AVLNode* node) {
