@@ -126,3 +126,9 @@ static bool h_foreach(HTab *htab, bool (*cbk)(HNode*, void*), void *arg) {
 void hm_foreach(HMap* hmap, bool (*cbk)(HNode *, void *), void* arg) {
     h_foreach(&hmap->newer, cbk, arg) && h_foreach(&hmap->older, cbk, arg);
 }
+
+void hm_clear(HMap *hmap) {
+    free(hmap->newer.tab);
+    free(hmap->older.tab);
+    *hmap = HMap{};
+}

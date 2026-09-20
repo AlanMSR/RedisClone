@@ -5,10 +5,6 @@
 
 #include "avl.hpp"
 
-static uint32_t avl_height(AVLNode* node) {
-    return node ? node->height : 0;
-}
-
 static void avl_update(AVLNode* node) {
     node->height = 1 + std::max(avl_height(node->left), avl_height(node->right));
     node->cnt = 1 + avl_cnt(node->left) + avl_cnt(node->right);
@@ -68,7 +64,7 @@ static AVLNode* avl_fix_left(AVLNode* node) {
 }
 
 static AVLNode* avl_fix_right(AVLNode* node) {
-    if (avl_height(node->right->right) < avl_height(node->left->left))
+    if (avl_height(node->right->right) < avl_height(node->right->left))
         node->right = rot_right(node->right);
     
     return rot_left(node);

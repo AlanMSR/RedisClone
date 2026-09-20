@@ -1,13 +1,19 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall
 
+SRCS = $(wildcard *.cpp)
+SERVER_SRCS = $(filter-out client.cpp,$(SRCS))
+CLIENT_SRCS = $(filter-out main.cpp,$(SRCS))
+
+.PHONY: all clean
+
 all: build/server build/client
 
-build/server: main.cpp utils.cpp utils.hpp buffer.cpp buffer.hpp hashtable.cpp hashtable.hpp | build
-	$(CXX) $(CXXFLAGS) main.cpp utils.cpp buffer.cpp hashtable.cpp -o build/server
+build/server: $(SERVER_SRCS) | build
+	$(CXX) $(CXXFLAGS) $(SERVER_SRCS) -o $@
 
-build/client: client.cpp utils.cpp utils.hpp buffer.cpp buffer.hpp hashtable.cpp hashtable.hpp | build
-	$(CXX) $(CXXFLAGS) client.cpp utils.cpp buffer.cpp hashtable.cpp -o build/client
+build/client: $(CLIENT_SRCS) | build
+	$(CXX) $(CXXFLAGS) $(CLIENT_SRCS) -o $@
 
 build:
 	mkdir -p build
