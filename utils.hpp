@@ -3,7 +3,7 @@
 #include <cstdint>
 
 const size_t k_max_msg = 32 << 20;
-
+const uint64_t k_idle_timeout_ms = 5 * 1000;
 
 void msg(const std::string &m);
 void die(const std::string &msg);
