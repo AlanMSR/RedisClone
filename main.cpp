@@ -739,7 +739,7 @@ static void do_del(std::vector<std::string>& cmd, Buffer& out) {
         return out_int(out, 0);
     }
 
-    delete container_of(node, Entry, node);
+    entry_del(container_of(node, Entry, node));
     return out_int(out, node ? 1 : 0);
 }
 
