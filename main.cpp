@@ -18,6 +18,9 @@
 #include "hashtable.hpp"
 #include "zset.hpp"
 #include "DList.hpp"
+#include "heap.hpp"
+
+// TODO: change to lookupKey
 
 // ============================================================
 // Constants, enums and data structures
@@ -64,6 +67,13 @@ struct Entry {
     ZSet zset;
     // to delete?
     std::string val;
+    // TTL
+    size_t heap_idx = -1;
+};
+
+struct LookupKey {
+    struct HNode node;
+    std::string key;
 };
 
 struct Conn {
@@ -89,6 +99,8 @@ static struct {
     std::vector<Conn*>fd2conn;
     // timer for idle connections
     DList idle_list;
+    // heap ttl
+    std::vector<HeapItem> heap;
 } g_data;
 
 // ============================================================
@@ -99,6 +111,14 @@ static struct {
 static uint64_t get_monotonic_msec();
 static int32_t next_timer_ms();
 static void process_timers();
+
+// heap
+static void heap_upsert(std::vector<HeapItem>& arr, size_t pos, HeapItem t);
+
+// TTL
+static void entry_set_ttl(Entry* ent, int64_t ttl_ms);
+static void heap_delete(std::vector<HeapItem>& arr, size_t pos);
+static void entry_del(Entry* ent);
 
 // connection handling
 static void handle_read(Conn* conn);
@@ -139,6 +159,7 @@ static bool str2dbl(const std::string& s, double& out);
 static bool str2int(const std::string& s, int64_t& out);
 static bool entry_eq(HNode* lhs, HNode* rhs);
 static ZSet* expect_zset(std::string& s);
+static bool hnode_same(HNode *node, HNode *key);
 
 // commands
 static void do_get(std::vector<std::string>& cmd, Buffer& out);
@@ -150,6 +171,8 @@ static void do_zquery(std::vector<std::string>& cmd, Buffer& out);
 static void do_zadd(std::vector<std::string>& cmd, Buffer& out);
 static void do_zrem(std::vector<std::string>& cmd, Buffer& out);
 static void do_zscore(std::vector<std::string>& cmd, Buffer& out);
+static void do_expire(std::vector<std::string> &cmd, Buffer &out);
+static void do_persist(std::vector<std::string> &cmd, Buffer &out);
 
 // server
 int main() {
@@ -252,14 +275,24 @@ static uint64_t get_monotonic_msec() {
 }
 
 static int32_t next_timer_ms() {
-    if (dlist_empty(&g_data.idle_list))
-        return -1;
-    
     uint64_t now_ms = get_monotonic_msec();
-    Conn* conn = container_of(g_data.idle_list.next, Conn, idle_node);
-    uint64_t next_ms = conn->last_active_ms + k_idle_timeout_ms;
-    if (next_ms <= now_ms)
+    uint64_t next_ms = (uint64_t)-1; // maxim value
+
+    if (!dlist_empty(&g_data.idle_list)) {
+        Conn* conn = container_of(g_data.idle_list.next, Conn, idle_node);
+        next_ms = conn->last_active_ms + k_idle_timeout_ms;
+    }
+    // ttl using a heap
+    if (!g_data.heap.empty() && g_data.heap[0].val < next_ms) {
+        next_ms = g_data.heap[0].val;
+    }
+    // timeout
+    if (next_ms == (uint64_t)-1 ) {
+        return -1; // no timer
+    }
+    if (next_ms <= now_ms) {
         return 0;
+    }
     
     return (int32_t) (next_ms - now_ms);
 }
@@ -275,6 +308,61 @@ static void process_timers() {
         fprintf(stderr, "removing idle connection: %d\n", conn->fd);
         conn_destroy(conn);
     }
+    // ttl timers using heap
+    const std::vector<HeapItem>& heap = g_data.heap;
+    const size_t k_max_works = 2000;
+    size_t nworks = 0;
+    while (!heap.empty() && heap[0].val < now_ms && nworks++ < k_max_works) {
+        Entry* ent = container_of(heap[0].ref, Entry, heap_idx);
+        hm_delete(&g_data.db, &ent->node, &hnode_same);
+        entry_del(ent);
+    }
+}
+
+// ============================================================
+// Heap
+// ============================================================
+
+static void heap_upsert(std::vector<HeapItem>& arr, size_t pos, HeapItem t) {
+    if (pos < arr.size()) {
+        arr[pos] = t;
+    } else {
+        pos = arr.size();
+        arr.push_back(t);
+    }
+    heap_update(arr.data(), pos, arr.size());
+}
+
+// ============================================================
+// TTL
+// ============================================================
+
+static void entry_set_ttl(Entry* ent, int64_t ttl_ms) {
+    if (ttl_ms < 0 && ent->heap_idx != (size_t)-1) {
+        // negative ttl means removing
+        heap_delete(g_data.heap, ent->heap_idx);
+        ent->heap_idx = -1;
+    } else if (ttl_ms >= 0) {
+        uint64_t expire_at = get_monotonic_msec() + (uint64_t)ttl_ms;
+        HeapItem item = {expire_at, &ent->heap_idx};
+        heap_upsert(g_data.heap, ent->heap_idx, item);
+    }
+}
+
+static void heap_delete(std::vector<HeapItem>& arr, size_t pos) {
+    // swap and delete
+    arr[pos] = arr.back();
+    arr.pop_back();
+    if (pos < arr.size())
+        heap_update(arr.data(), pos, arr.size());
+}
+
+static void entry_del(Entry* ent) {
+    if (ent->type == T_ZSET) {
+        zset_clear(&ent->zset);
+    }
+    entry_set_ttl(ent, -1);
+    delete ent;
 }
 
 // ============================================================
@@ -588,6 +676,10 @@ static ZSet *expect_zset(std::string &s) {
     return ent->type == T_ZSET ? &ent->zset : NULL;
 }
 
+static bool hnode_same(HNode *node, HNode *key) {
+    return node == key;
+}
+
 // ============================================================
 // Commands
 // ============================================================
@@ -743,6 +835,40 @@ static void do_zscore(std::vector<std::string>& cmd, Buffer& out) {
     return out_dbl(out, znode->score);
 }
 
+static void do_expire(std::vector<std::string> &cmd, Buffer &out) {
+    int64_t ttl_ms = 0;
+    if (!str2int(cmd[2], ttl_ms))
+        return out_err(out, ERR_BAD_ARG, "expect int64");
+    
+    LookupKey key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    HNode* node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    // set ttl
+    if (node) {
+        Entry* ent = container_of(node, Entry, node);
+        entry_set_ttl(ent, ttl_ms);
+    }
+
+    return out_int(out, node ? 1 : 0);
+}
+
+static void do_persist(std::vector<std::string> &cmd, Buffer &out) {
+    LookupKey key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    HNode* node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (!node)
+        return out_int(out, 0);
+
+    Entry* ent = container_of(node, Entry, node);
+    if (ent->heap_idx == (size_t)-1)
+        return out_int(out, 0); // not ttl
+
+    entry_set_ttl(ent, -1);
+    return out_int(out, 1);
+}
+
 // ============================================================
 // Command dispatcher
 // ============================================================
@@ -756,5 +882,7 @@ static void do_request(std::vector<std::string>& cmd, Buffer& out) {
     else if (cmd.size() == 4 && cmd[0] == "zadd")   { return do_zadd(cmd, out); }
     else if (cmd.size() == 3 && cmd[0] == "zrem")   { return do_zrem(cmd, out); }
     else if (cmd.size() == 3 && cmd[0] == "zscore") { return do_zscore(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "expire") { return do_expire(cmd, out); }
+    else if (cmd.size() == 2 && cmd[0] == "persist") { return do_persist(cmd, out); }
     else { out_err(out, ERR_UNKNOWN, "unrecognized command"); } // unrecognized command
 }
