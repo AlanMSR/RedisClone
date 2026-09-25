@@ -19,6 +19,7 @@
 #include "zset.hpp"
 #include "DList.hpp"
 #include "heap.hpp"
+#include "thread_pool.hpp"
 
 // TODO: change to lookupKey
 
@@ -101,6 +102,8 @@ static struct {
     DList idle_list;
     // heap ttl
     std::vector<HeapItem> heap;
+    // thread pool
+    ThreadPool thread_pool;
 } g_data;
 
 // ============================================================
@@ -118,7 +121,6 @@ static void heap_upsert(std::vector<HeapItem>& arr, size_t pos, HeapItem t);
 // TTL
 static void entry_set_ttl(Entry* ent, int64_t ttl_ms);
 static void heap_delete(std::vector<HeapItem>& arr, size_t pos);
-static void entry_del(Entry* ent);
 
 // connection handling
 static void handle_read(Conn* conn);
@@ -154,6 +156,11 @@ static size_t out_begin_arr(Buffer& out);
 static void out_end_arr(Buffer& out, size_t ctx, uint32_t n);
 static void out_err(Buffer& out, uint32_t code, const std::string& msg);
 
+// thread pool
+static void entry_del_sync(Entry* ent);
+static void entry_del_func(void* arg);
+static void entry_del(Entry* ent);
+
 // helpers
 static bool str2dbl(const std::string& s, double& out);
 static bool str2int(const std::string& s, int64_t& out);
@@ -176,6 +183,8 @@ static void do_persist(std::vector<std::string> &cmd, Buffer &out);
 
 // server
 int main() {
+    thread_pool_init(&g_data.thread_pool, 4);
+
     int socketFD = socket(AF_INET, SOCK_STREAM, 0);
 
     int val = 1;
@@ -355,14 +364,6 @@ static void heap_delete(std::vector<HeapItem>& arr, size_t pos) {
     arr.pop_back();
     if (pos < arr.size())
         heap_update(arr.data(), pos, arr.size());
-}
-
-static void entry_del(Entry* ent) {
-    if (ent->type == T_ZSET) {
-        zset_clear(&ent->zset);
-    }
-    entry_set_ttl(ent, -1);
-    delete ent;
 }
 
 // ============================================================
@@ -640,6 +641,34 @@ static void out_err(Buffer &out, uint32_t code, const std::string &msg) {
     buf_append_u32(out, code);
     buf_append_u32(out, (uint32_t)msg.size());
     out.append((const uint8_t *)msg.data(), msg.size());
+}
+
+// ============================================================
+// Thread pool
+// ============================================================
+
+static void entry_del_sync(Entry* ent) {
+    if (ent->type == T_ZSET)
+        zset_clear(&ent->zset);
+    
+    delete ent;
+}
+
+// wrapper function for thread pool
+static void entry_del_func(void* arg) {
+    entry_del_sync((Entry*)arg);
+}
+
+static void entry_del(Entry* ent) {
+    entry_set_ttl(ent, -1);
+    // sun detructor in thread pool
+    size_t set_size = (ent->type == T_ZSET) ? hm_size(&ent->zset.hmap) : 0;
+    const size_t k_large_container_size = 1000;
+    if (set_size > k_large_container_size) {
+        thread_pool_queue(&g_data.thread_pool, &entry_del_func, ent);
+    } else {
+        entry_del_sync(ent);
+    }
 }
 
 // ============================================================
