@@ -21,8 +21,6 @@
 #include "heap.hpp"
 #include "thread_pool.hpp"
 
-// TODO: change to lookupKey
-
 // ============================================================
 // Constants, enums and data structures
 // ============================================================
@@ -253,7 +251,6 @@ int main() {
                 continue;
 
             Conn* conn = g_data.fd2conn[poll_args[i].fd];
-            conn->last_active_ms = get_monotonic_msec(); 
 
             // updating timer moving it to the end of the list
             conn->last_active_ms = get_monotonic_msec();
@@ -490,10 +487,6 @@ static bool try_one_request(Conn* conn) {
         return false;
     }
 
-    // // generate the response
-    // conn->outgoing.append((const uint8_t*)&len, headerBytes);
-    // conn->outgoing.append(request, len);
-
     // Response resp;
     size_t header_pos = 0;
     response_begin(conn->outgoing, &header_pos);
@@ -689,12 +682,12 @@ static bool str2int(const std::string &s, int64_t &out) {
 
 static bool entry_eq(HNode* lhs, HNode* rhs) {
     struct Entry* le = container_of(lhs, struct Entry, node);
-    struct Entry* re = container_of(rhs, struct Entry, node);
+    struct LookupKey* re = container_of(rhs, struct LookupKey, node);
     return le->key == re->key;
 }
 
 static ZSet *expect_zset(std::string &s) {
-    Entry key;
+    LookupKey key;
     key.key.swap(s);
     key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
     HNode *hnode = hm_lookup(&g_data.db, &key.node, &entry_eq);
@@ -726,7 +719,7 @@ static void do_keys(std::vector<std::string>& cmd, Buffer& out) {
 }
 
 static void do_get(std::vector<std::string>& cmd, Buffer& out) {
-    Entry key;
+    LookupKey key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
     // lookup
@@ -741,7 +734,7 @@ static void do_get(std::vector<std::string>& cmd, Buffer& out) {
 }
 
 static void do_set(std::vector<std::string>& cmd, Buffer& out) {
-    Entry key;
+    LookupKey key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
 
@@ -760,7 +753,7 @@ static void do_set(std::vector<std::string>& cmd, Buffer& out) {
 }
 
 static void do_del(std::vector<std::string>& cmd, Buffer& out) {
-    Entry key;
+    LookupKey key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
     HNode* node = hm_delete(&g_data.db, &key.node, &entry_eq);
@@ -811,7 +804,7 @@ static void do_zadd(std::vector<std::string>& cmd, Buffer& out) {
     if (!str2dbl(cmd[2], score))
         return out_err(out, ERR_BAD_ARG, "expect double");
 
-    Entry key;
+    LookupKey key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
     HNode* hnode = hm_lookup(&g_data.db, &key.node, &entry_eq);
