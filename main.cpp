@@ -27,6 +27,7 @@
 
 constexpr size_t headerBytes = 4;
 static const ZSet k_empty_zset;
+static const HMap k_empty_set;
 
 enum {
     RES_OK = 0,
@@ -55,6 +56,19 @@ enum {
     T_INIT = 0,
     T_STR  = 1,
     T_ZSET = 2,
+    T_SET  = 3,
+};
+
+// set member node + lookup probe
+struct SetKey {
+    HNode node;
+    const char* name = nullptr;
+    size_t len = 0;
+};
+
+struct SetNode {
+    HNode node;
+    std::string val;
 };
 
 // KV pair
@@ -64,6 +78,7 @@ struct Entry {
     uint32_t type = 0;
     std::string str;
     ZSet zset;
+    HMap set;
     // to delete?
     std::string val;
     // TTL
@@ -158,12 +173,17 @@ static void out_err(Buffer& out, uint32_t code, const std::string& msg);
 static void entry_del_sync(Entry* ent);
 static void entry_del_func(void* arg);
 static void entry_del(Entry* ent);
+static bool cb_set_free(HNode* node, void* arg);
+static void set_clear(HMap* set);
 
 // helpers
 static bool str2dbl(const std::string& s, double& out);
 static bool str2int(const std::string& s, int64_t& out);
 static bool entry_eq(HNode* lhs, HNode* rhs);
 static ZSet* expect_zset(std::string& s);
+static HMap* expect_set(std::string& s);
+static SetNode* setnode_new(const std::string& member);
+static bool set_hcmp(HNode* node, HNode* key);
 static bool hnode_same(HNode *node, HNode *key);
 
 // commands
@@ -176,6 +196,12 @@ static void do_zquery(std::vector<std::string>& cmd, Buffer& out);
 static void do_zadd(std::vector<std::string>& cmd, Buffer& out);
 static void do_zrem(std::vector<std::string>& cmd, Buffer& out);
 static void do_zscore(std::vector<std::string>& cmd, Buffer& out);
+static bool cb_smembers(HNode* node, void* arg);
+static void do_sadd(std::vector<std::string>& cmd, Buffer& out);
+static void do_srem(std::vector<std::string>& cmd, Buffer& out);
+static void do_sismember(std::vector<std::string>& cmd, Buffer& out);
+static void do_smembers(std::vector<std::string>& cmd, Buffer& out);
+static void do_scard(std::vector<std::string>& cmd, Buffer& out);
 static void do_expire(std::vector<std::string> &cmd, Buffer &out);
 static void do_persist(std::vector<std::string> &cmd, Buffer &out);
 
@@ -640,10 +666,22 @@ static void out_err(Buffer &out, uint32_t code, const std::string &msg) {
 // Thread pool
 // ============================================================
 
+static bool cb_set_free(HNode* node, void*) {
+    delete container_of(node, SetNode, node);
+    return true;
+}
+
+static void set_clear(HMap* set) {
+    hm_foreach(set, &cb_set_free, nullptr);
+    hm_clear(set);
+}
+
 static void entry_del_sync(Entry* ent) {
     if (ent->type == T_ZSET)
         zset_clear(&ent->zset);
-    
+    else if (ent->type == T_SET)
+        set_clear(&ent->set);
+
     delete ent;
 }
 
@@ -655,7 +693,12 @@ static void entry_del_func(void* arg) {
 static void entry_del(Entry* ent) {
     entry_set_ttl(ent, -1);
     // sun detructor in thread pool
-    size_t set_size = (ent->type == T_ZSET) ? hm_size(&ent->zset.hmap) : 0;
+    size_t set_size = 0;
+    if (ent->type == T_ZSET) {
+        set_size = hm_size(&ent->zset.hmap);
+    } else if (ent->type == T_SET) {
+        set_size = hm_size(&ent->set);
+    }
     const size_t k_large_container_size = 1000;
     if (set_size > k_large_container_size) {
         thread_pool_queue(&g_data.thread_pool, &entry_del_func, ent);
@@ -696,6 +739,32 @@ static ZSet *expect_zset(std::string &s) {
     }
     Entry *ent = container_of(hnode, Entry, node);
     return ent->type == T_ZSET ? &ent->zset : NULL;
+}
+
+static HMap *expect_set(std::string &s) {
+    LookupKey key;
+    key.key.swap(s);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    HNode *hnode = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if (!hnode)
+        return (HMap *)&k_empty_set;
+    Entry *ent = container_of(hnode, Entry, node);
+    return ent->type == T_SET ? &ent->set : NULL;
+}
+
+static SetNode* setnode_new(const std::string& member) {
+    SetNode* n = new SetNode();
+    n->val = member;
+    n->node.hcode = str_hash((uint8_t*)n->val.data(), n->val.size());
+    return n;
+}
+
+static bool set_hcmp(HNode* node, HNode* key) {
+    SetNode* sn = container_of(node, SetNode, node);
+    SetKey* sk = container_of(key, SetKey, node);
+    if (sn->val.size() != sk->len)
+        return false;
+    return 0 == memcmp(sn->val.data(), sk->name, sk->len);
 }
 
 static bool hnode_same(HNode *node, HNode *key) {
@@ -857,6 +926,101 @@ static void do_zscore(std::vector<std::string>& cmd, Buffer& out) {
     return out_dbl(out, znode->score);
 }
 
+static bool cb_smembers(HNode* node, void* arg) {
+    Buffer& out = *(Buffer*)arg;
+    SetNode* sn = container_of(node, SetNode, node);
+    out_str(out, sn->val.data(), sn->val.size());
+    return true;
+}
+
+// sadd key member
+static void do_sadd(std::vector<std::string>& cmd, Buffer& out) {
+    LookupKey key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t*)key.key.data(), key.key.size());
+    HNode* hnode = hm_lookup(&g_data.db, &key.node, &entry_eq);
+
+    Entry* ent = nullptr;
+    if (!hnode) {
+        ent = new Entry();
+        ent->key.swap(key.key);
+        ent->node.hcode = key.node.hcode;
+        ent->type = T_SET;
+        hm_insert(&g_data.db, &ent->node);
+    } else {
+        ent = container_of(hnode, Entry, node);
+        if (ent->type != T_SET)
+            return out_err(out, ERR_BAD_TYP, "expected set");
+    }
+
+    const std::string& member = cmd[2];
+    SetKey probe;
+    probe.node.hcode = str_hash((uint8_t*)member.data(), member.size());
+    probe.name = member.data();
+    probe.len = member.size();
+    if (hm_lookup(&ent->set, &probe.node, &set_hcmp))
+        return out_int(out, 0);
+
+    hm_insert(&ent->set, &setnode_new(member)->node);
+    return out_int(out, 1);
+}
+
+// srem key member
+static void do_srem(std::vector<std::string>& cmd, Buffer& out) {
+    HMap* set = expect_set(cmd[1]);
+    if (!set)
+        return out_err(out, ERR_BAD_TYP, "expected set");
+
+    const std::string& member = cmd[2];
+    SetKey probe;
+    probe.node.hcode = str_hash((uint8_t*)member.data(), member.size());
+    probe.name = member.data();
+    probe.len = member.size();
+
+    // Keep the key present even when the set becomes empty; unlike Redis,
+    // explicit DEL is the removal path used by this server's data model.
+    HNode* found = hm_delete(set, &probe.node, &set_hcmp);
+    if (!found)
+        return out_int(out, 0);
+
+    delete container_of(found, SetNode, node);
+    return out_int(out, 1);
+}
+
+// sismember key member
+static void do_sismember(std::vector<std::string>& cmd, Buffer& out) {
+    HMap* set = expect_set(cmd[1]);
+    if (!set)
+        return out_err(out, ERR_BAD_TYP, "expected set");
+
+    const std::string& member = cmd[2];
+    SetKey probe;
+    probe.node.hcode = str_hash((uint8_t*)member.data(), member.size());
+    probe.name = member.data();
+    probe.len = member.size();
+
+    HNode* found = hm_lookup(set, &probe.node, &set_hcmp);
+    return out_int(out, found ? 1 : 0);
+}
+
+// smembers key
+static void do_smembers(std::vector<std::string>& cmd, Buffer& out) {
+    HMap* set = expect_set(cmd[1]);
+    if (!set)
+        return out_err(out, ERR_BAD_TYP, "expected set");
+
+    out_arr(out, (uint32_t)hm_size(set));
+    hm_foreach(set, &cb_smembers, (void*)&out);
+}
+
+// scard key
+static void do_scard(std::vector<std::string>& cmd, Buffer& out) {
+    HMap* set = expect_set(cmd[1]);
+    if (!set)
+        return out_err(out, ERR_BAD_TYP, "expected set");
+    return out_int(out, (int64_t)hm_size(set));
+}
+
 static void do_expire(std::vector<std::string> &cmd, Buffer &out) {
     int64_t ttl_ms = 0;
     if (!str2int(cmd[2], ttl_ms))
@@ -896,15 +1060,20 @@ static void do_persist(std::vector<std::string> &cmd, Buffer &out) {
 // ============================================================
 
 static void do_request(std::vector<std::string>& cmd, Buffer& out) {
-    if (cmd.size() == 2 && cmd[0] == "get")         { return do_get(cmd, out); }
-    else if (cmd.size() == 3 && cmd[0] == "set")    { return do_set(cmd, out); }
-    else if (cmd.size() == 2 && cmd[0] == "del")    { return do_del(cmd, out); }
-    else if (cmd.size() == 1 && cmd[0] == "keys")   { return do_keys(cmd, out); }
-    else if (cmd.size() == 6 && cmd[0] == "zquery") { return do_zquery(cmd, out); }
-    else if (cmd.size() == 4 && cmd[0] == "zadd")   { return do_zadd(cmd, out); }
-    else if (cmd.size() == 3 && cmd[0] == "zrem")   { return do_zrem(cmd, out); }
-    else if (cmd.size() == 3 && cmd[0] == "zscore") { return do_zscore(cmd, out); }
-    else if (cmd.size() == 3 && cmd[0] == "expire") { return do_expire(cmd, out); }
-    else if (cmd.size() == 2 && cmd[0] == "persist") { return do_persist(cmd, out); }
+    if (cmd.size() == 2 && cmd[0] == "get")                   { return do_get(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "set")              { return do_set(cmd, out); }
+    else if (cmd.size() == 2 && cmd[0] == "del")              { return do_del(cmd, out); }
+    else if (cmd.size() == 1 && cmd[0] == "keys")             { return do_keys(cmd, out); }
+    else if (cmd.size() == 6 && cmd[0] == "zquery")           { return do_zquery(cmd, out); }
+    else if (cmd.size() == 4 && cmd[0] == "zadd")             { return do_zadd(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "zrem")             { return do_zrem(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "zscore")           { return do_zscore(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "sadd")             { return do_sadd(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "srem")             { return do_srem(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "sismember")        { return do_sismember(cmd, out); }
+    else if (cmd.size() == 2 && cmd[0] == "smembers")         { return do_smembers(cmd, out); }
+    else if (cmd.size() == 2 && cmd[0] == "scard")            { return do_scard(cmd, out); }
+    else if (cmd.size() == 3 && cmd[0] == "expire")           { return do_expire(cmd, out); }
+    else if (cmd.size() == 2 && cmd[0] == "persist")          { return do_persist(cmd, out); }
     else { out_err(out, ERR_UNKNOWN, "unrecognized command"); } // unrecognized command
 }
